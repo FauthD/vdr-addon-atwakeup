@@ -1,0 +1,124 @@
+#!/bin/sh
+# vdr-addon-atwakup - Tries to wake the PC at a given time - Dieter Fauth
+# Ensure you run this script after any access to hwclock takes place.
+# The RTC-writer is implemented as a SYS-V init script, so this is ok for Ubuntu 14.04.
+# Designed to work with yaVDR and e-tobi Packets. You could also use the RTC-Writer standalone without a VDR,
+# 	but then a much simpler script would do this taks as well.
+#
+# Difference to the vdr-addon-acpiwakup:
+# acpi-wakup is perfect if the PC is running vdr as main task.
+# For PCs (server) that run vdr only as one of many other tasks, we need a way to start/stop vdr and also maintain the RTC.
+# The "at" command is used to start vdr if the server is already up and running, The RTC is used to wakeup the server.
+# Most likly you want a regular waking time e.g. every moring at 7:00. Add it to the vdr-addon-atwakeup.conf.
+#
+# A separate scipt needs to shutdown the server if there is noting to do. This script is not included yet.
+#
+# Currently only the UTC mode for the RTC is supported, but a check is made for this condition,
+#	 so you can find the right place to add support for local timezone.
+#
+# The addon uses these files:
+# 	/etc/vdr/vdr-addon-atwakeup.conf		# Configuration
+#	/usr/share/vdr/shutdown-hooks/S91.atwakeup	# RTC-Writer
+#	/etc/init.d/vdr-addon-atwakeup			# VDR shutdown script
+# Create the links for SYS-V init in rc1.d and rc6.d
+# sudo update-rc.d vdr-addon-atwakeup start 10 0 1 6 .
+#
+# The scripts create/update these files:
+#	/var/cache/vdr/wakeup.time
+#	/var/log/vdr_onoff.log
+
+### BEGIN INIT INFO
+# Provides:          wakeup
+# Required-Start:    hwclock
+# Required-Stop:     hwclock
+# Default-Start:     0 1 6
+# Default-Stop:      
+### END INIT INFO
+
+#set -x
+
+# Time values use a name postfix (U for UTC, TZ for timezone)
+# All Epoch times are in UTC as usuall.
+
+. /etc/vdr/vdr-addon-atwakeup.conf
+
+LOGONOFF="/var/log/vdr_onoff.log"
+WAKEUP_FILE="/var/cache/vdr/wakeup.time"
+
+# take care of UTC setting
+if [ -f /etc/default/rcS ]; then
+	UTC=$(egrep "^[^#]*UTC=" /etc/default/rcS | tail -n1 | cut -d= -f2)
+fi
+
+# Defaults:
+[ -z "$WAKEALARM" ]		&& export WAKEALARM="/sys/class/rtc/rtc0/wakealarm"
+[ -z "$AT_START_AHEAD" ]	&& export AT_START_AHEAD=5
+
+wakeup()
+{
+	# Get VDR timer
+	if [ -s $WAKEUP_FILE ]; then       	
+		VDR_TIMER_U="$(cat $WAKEUP_FILE)"
+	fi
+	[ -z "$VDR_TIMER_U" ]	&& VDR_TIMER_U=0
+
+	if [ -z "$AT_REGULAR_TIME_TZ" ]; then
+		WAKETIME_U=$VDR_TIMER_U	
+	else 
+		# ensure we pick the right regular time (could be today or tommorow)
+		TODAY_U=$(date '+%s' -d $AT_REGULAR_TIME_TZ)
+		WAKETIME_U=$(date '+%s' -d "next day $AT_REGULAR_TIME_TZ")
+
+		if [ $(date '+%s' -d now) -lt $TODAY_U ];  then 
+			WAKETIME_U=$TODAY_U
+			echo "using todays time"
+		fi
+	fi
+
+	# Ensure VDR timer is not in the past
+	if [ $(date '+%s' -d now) -lt $VDR_TIMER_U ];  then 
+		# Use VDR timer if it is earlier than regular time.
+		if [ $WAKETIME_U -gt $VDR_TIMER_U ];  then 
+			WAKETIME_U=$(($VDR_TIMER_U - $AT_START_AHEAD))
+			echo "using VDR timer"
+		fi
+	else
+		echo "VDR timer in the past"
+	fi
+
+	# Double check to avoid RTS set in the past. Better wake every hour than never.
+	if [ $(date '+%s' -d now) -gt $WAKETIME_U ];  then 
+		logger "wakeup error: wake time is in the past"
+		echo "wakeup error: wake time is in the past"
+		WAKETIME_U=$(date '+%s' -d now + 60 minutes)	# Emerency action
+	fi
+
+	if [ "$UTC" != "yes" ]; then
+		logger "wakeup error: Not supported yet if RTC runs with local time"
+	fi
+
+	# Set the RTC
+	echo 0 > $WAKEALARM
+	echo $WAKETIME_U > $WAKEALARM
+
+	# Rest is logging
+	LOG_TEXT_U=$(date -u -d "1970-01-01 $WAKETIME_U sec") 
+	logger "wakeup: Setting RTC for wakeup: $LOG_TEXT_U"
+	echo "SETRTC" `date +%F\ %H:%M` "to $LOG_TEXT_U" >>$LOGONOFF
+}
+
+case "$1" in
+	start)
+	    wakeup "$@"
+	    ;;
+	stop)
+	    ;;
+	*)
+	    echo "Usage: $0 {start|stop}"
+	    exit 1
+esac
+
+exit 0
+
+
+

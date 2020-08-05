@@ -1,0 +1,48 @@
+#!/bin/sh
+#
+# VDR shutdown hook for at command - Dieter Fauth
+# --------------------------
+#
+# This shutdown hook sets the wakeup time for the next timer using
+# at. Good if vdr runs on a server.
+#
+#set -x
+
+. /etc/vdr/vdr-addon-atwakeup.conf
+
+logit91()
+{
+  logger -p local0.notice -- S91.custom: $*
+}
+
+LOGONOFF=/var/log/vdr_onoff.log
+WAKEUP_FILE="/var/cache/vdr/wakeup.time"
+
+TimeToAtString()
+{
+	# We need steps teps to get local time since at needs local
+	TIME_U=$(date -d "1970-01-01 $1 sec" -u)
+	date -d "$TIME_U" +%H%M\ %F
+}
+
+SetAtTime()
+{
+	VDR_TIMER_U=$1
+	TIME=$(TimeToAtString $(($VDR_TIMER_U - 120)))	# give service 2 minutes to start
+	# Use the at command to start vdr at given time
+	#echo "service vdr start" | at $TIME
+	echo "systemclt start vdr.service" | at $TIME
+	# Store time (epoch in utc), so the final server shutdown can set the RTC
+	echo $VDR_TIMER_U >$WAKEUP_FILE
+
+	# the rest is simply for logging	
+	logit91 "Setting at alarm time to: $TIME"
+	shift
+	shift
+	echo "OFF   " `date +%F\ %H:%M` "at $TIME ($VDR_TIMER_U) ($*)" >>$LOGONOFF
+}
+
+SetAtTime $*
+exit 0
+
+
